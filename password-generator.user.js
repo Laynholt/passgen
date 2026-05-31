@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Password Generator
 // @namespace    local.password.generator
-// @version      1.0.0
+// @version      1.1.0
 // @description  Deterministic password generator with per-site settings for Tampermonkey and Violentmonkey.
 // @author       local
 // @match        *://*/*
 // @match        file:///*
+// @updateURL    https://github.com/Laynholt/passgen/releases/latest/download/password-generator.user.js
+// @downloadURL  https://github.com/Laynholt/passgen/releases/latest/download/password-generator.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
@@ -36,6 +38,11 @@
   const STORAGE_PREFIX = "pg-userscript:settings:";
   const GLOBAL_KEY = "pg-userscript:global";
   const INDEX_KEY = "pg-userscript:index";
+  const FAB_POSITION_KEY = "pg-userscript:fab-position";
+  const FAB_SIZE = 62;
+  const FAB_MARGIN = 8;
+  const DEFAULT_FAB_OFFSET = Object.freeze({ right: 14, bottom: 66 });
+  const DRAG_THRESHOLD_PX = 6;
 
   const DEFAULT_SETTINGS = Object.freeze({
     master: "",
@@ -258,6 +265,50 @@
     return Math.max(min, Math.min(max, parsed));
   }
 
+  function normalizeViewport(viewport) {
+    return {
+      width: Math.max(1, Number(viewport?.width) || 1),
+      height: Math.max(1, Number(viewport?.height) || 1)
+    };
+  }
+
+  function currentViewport() {
+    const doc = root.document?.documentElement;
+    return normalizeViewport({
+      width: root.innerWidth || doc?.clientWidth || 1,
+      height: root.innerHeight || doc?.clientHeight || 1
+    });
+  }
+
+  function clampFabPosition(position, viewport, size = FAB_SIZE, margin = FAB_MARGIN) {
+    const safeViewport = normalizeViewport(viewport);
+    const maxX = Math.max(margin, safeViewport.width - size - margin);
+    const maxY = Math.max(margin, safeViewport.height - size - margin);
+    const rawX = Number(position?.x);
+    const rawY = Number(position?.y);
+
+    return {
+      x: Math.round(Math.min(Math.max(Number.isFinite(rawX) ? rawX : margin, margin), maxX)),
+      y: Math.round(Math.min(Math.max(Number.isFinite(rawY) ? rawY : margin, margin), maxY))
+    };
+  }
+
+  function defaultFabPosition(viewport, size = FAB_SIZE) {
+    const safeViewport = normalizeViewport(viewport);
+    return clampFabPosition({
+      x: safeViewport.width - DEFAULT_FAB_OFFSET.right - size,
+      y: safeViewport.height - DEFAULT_FAB_OFFSET.bottom - size
+    }, safeViewport, size);
+  }
+
+  function resolveFabPosition(value, viewport) {
+    if (value && Number.isFinite(Number(value.x)) && Number.isFinite(Number(value.y))) {
+      return clampFabPosition(value, viewport);
+    }
+
+    return defaultFabPosition(viewport);
+  }
+
   function toStoredSettings(settings) {
     return {
       length: clampInteger(settings.length, 8, 64, DEFAULT_SETTINGS.length),
@@ -441,7 +492,7 @@
   }
 
   async function exportSettings() {
-    const keys = (await listValues()).filter((key) => key === GLOBAL_KEY || key === INDEX_KEY || key.startsWith(STORAGE_PREFIX));
+    const keys = (await listValues()).filter((key) => key === GLOBAL_KEY || key === INDEX_KEY || key === FAB_POSITION_KEY || key.startsWith(STORAGE_PREFIX));
     const output = {};
 
     for (const key of keys) {
@@ -458,7 +509,7 @@
     }
 
     for (const [key, value] of Object.entries(parsed)) {
-      if (key === GLOBAL_KEY || key === INDEX_KEY || key.startsWith(STORAGE_PREFIX)) {
+      if (key === GLOBAL_KEY || key === INDEX_KEY || key === FAB_POSITION_KEY || key.startsWith(STORAGE_PREFIX)) {
         await setValue(key, value);
         if (key !== INDEX_KEY) await rememberKey(key);
       }
@@ -466,10 +517,52 @@
   }
 
   async function resetSettings() {
-    const keys = (await listValues()).filter((key) => key === GLOBAL_KEY || key === INDEX_KEY || key.startsWith(STORAGE_PREFIX));
+    const keys = (await listValues()).filter((key) => key === GLOBAL_KEY || key === INDEX_KEY || key === FAB_POSITION_KEY || key.startsWith(STORAGE_PREFIX));
     for (const key of keys) {
       await deleteValue(key);
     }
+  }
+
+  function applyFabPosition(state, position) {
+    const next = clampFabPosition(position, currentViewport());
+    state.fabPosition = next;
+    state.fab.style.left = `${next.x}px`;
+    state.fab.style.top = `${next.y}px`;
+    state.fab.style.right = "auto";
+    state.fab.style.bottom = "auto";
+    positionPanelNearFab(state);
+  }
+
+  async function loadFabPosition(state) {
+    const saved = await getValue(FAB_POSITION_KEY, null);
+    applyFabPosition(state, resolveFabPosition(saved, currentViewport()));
+  }
+
+  async function saveFabPosition(state) {
+    await setValue(FAB_POSITION_KEY, state.fabPosition);
+    await rememberKey(FAB_POSITION_KEY);
+  }
+
+  function positionPanelNearFab(state) {
+    if (!state.panel || state.panel.hidden) return;
+
+    const viewport = currentViewport();
+    const fabRect = state.fab.getBoundingClientRect();
+    const panelRect = state.panel.getBoundingClientRect();
+    const panelWidth = panelRect.width || Math.min(360, viewport.width - 24);
+    const panelHeight = panelRect.height || Math.min(720, viewport.height - 36);
+    const margin = 12;
+    const maxX = Math.max(margin, viewport.width - panelWidth - margin);
+    const maxY = Math.max(margin, viewport.height - panelHeight - margin);
+    const centeredX = fabRect.left + fabRect.width / 2 - panelWidth / 2;
+    const aboveY = fabRect.top - panelHeight - margin;
+    const belowY = fabRect.bottom + margin;
+    const preferredY = aboveY >= margin ? aboveY : belowY;
+
+    state.panel.style.left = `${Math.round(Math.min(Math.max(centeredX, margin), maxX))}px`;
+    state.panel.style.top = `${Math.round(Math.min(Math.max(preferredY, margin), maxY))}px`;
+    state.panel.style.right = "auto";
+    state.panel.style.bottom = "auto";
   }
 
   function downloadText(filename, text) {
@@ -521,7 +614,10 @@
           cursor: pointer;
           box-shadow: none;
           padding: 0;
+          touch-action: none;
+          user-select: none;
         }
+        .pg-fab.is-dragging { cursor: grabbing; }
         .pg-fab-icon {
           width: 62px;
           height: 62px;
@@ -839,16 +935,85 @@
       resetButton: shadow.querySelector(".pg-reset"),
       file: shadow.querySelector(".pg-file"),
       expanded: false,
+      fabPosition: null,
+      suppressNextFabClick: false,
       lastPassword: ""
     };
   }
 
+  function bindFabDrag(state) {
+    let drag = null;
+
+    state.fab.addEventListener("pointerdown", (event) => {
+      if (event.button != null && event.button !== 0) return;
+
+      const rect = state.fab.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: rect.left,
+        originY: rect.top,
+        active: false
+      };
+      state.fab.setPointerCapture?.(event.pointerId);
+    });
+
+    state.fab.addEventListener("pointermove", (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      const distance = Math.hypot(dx, dy);
+
+      if (!drag.active && distance < DRAG_THRESHOLD_PX) return;
+
+      drag.active = true;
+      state.fab.classList.add("is-dragging");
+      event.preventDefault();
+      applyFabPosition(state, {
+        x: drag.originX + dx,
+        y: drag.originY + dy
+      });
+    });
+
+    const finishDrag = async (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+
+      const wasDragging = drag.active;
+      drag = null;
+      state.fab.classList.remove("is-dragging");
+      state.fab.releasePointerCapture?.(event.pointerId);
+
+      if (wasDragging) {
+        state.suppressNextFabClick = true;
+        event.preventDefault();
+        await saveFabPosition(state);
+      }
+    };
+
+    state.fab.addEventListener("pointerup", finishDrag);
+    state.fab.addEventListener("pointercancel", finishDrag);
+
+    root.addEventListener?.("resize", () => {
+      applyFabPosition(state, state.fabPosition || defaultFabPosition(currentViewport()));
+    }, { passive: true });
+  }
+
   async function bindUi(state) {
+    await loadFabPosition(state);
+    bindFabDrag(state);
     await loadCurrentDomainIntoUi(state);
 
     state.fab.addEventListener("click", async () => {
+      if (state.suppressNextFabClick) {
+        state.suppressNextFabClick = false;
+        return;
+      }
+
       state.panel.hidden = !state.panel.hidden;
       if (!state.panel.hidden && !state.domain.value) await loadCurrentDomainIntoUi(state);
+      positionPanelNearFab(state);
     });
 
     state.close.addEventListener("click", () => {
@@ -987,8 +1152,11 @@
     __test: {
       DEFAULT_SETTINGS,
       FAB_ICON_SVG,
+      FAB_POSITION_KEY,
       QUICK_LENGTH_PRESETS,
       alphabetByMode,
+      clampFabPosition,
+      defaultFabPosition,
       extractDomain,
       extractDomainFromHostname,
       generateSitePassword,

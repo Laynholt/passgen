@@ -1,7 +1,11 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 
 const pg = require("../password-generator.user.js");
+const scriptSource = fs.readFileSync(path.join(__dirname, "..", "password-generator.user.js"), "utf8");
+const packageJson = require("../package.json");
 
 test("generateSitePassword is deterministic and keeps the requested policy", async () => {
   const password = await pg.__test.generateSitePassword({
@@ -39,6 +43,15 @@ test("default settings do not include a built-in master key", () => {
   assert.equal(pg.__test.DEFAULT_SETTINGS.dontRemember, false);
 });
 
+test("metadata declares GitHub release URLs for userscript manager updates", () => {
+  const releaseAssetUrl = "https://github.com/Laynholt/passgen/releases/latest/download/password-generator.user.js";
+
+  assert.match(scriptSource, /^\/\/ @version\s+1\.1\.0$/m);
+  assert.equal(packageJson.version, "1.1.0");
+  assert.match(scriptSource, new RegExp(`^// @updateURL\\s+${releaseAssetUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+  assert.match(scriptSource, new RegExp(`^// @downloadURL\\s+${releaseAssetUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+});
+
 test("settings saved with dontRemember omit the master key", () => {
   const saved = pg.__test.toStoredSettings({
     master: "secret master",
@@ -62,6 +75,21 @@ test("quick length presets expose normal and short password lengths", () => {
     { label: "24", value: 24 },
     { label: "16", value: 16 }
   ]);
+});
+
+test("floating button position helpers clamp saved positions to the viewport", () => {
+  assert.deepEqual(
+    pg.__test.defaultFabPosition({ width: 360, height: 640 }),
+    { x: 284, y: 512 }
+  );
+  assert.deepEqual(
+    pg.__test.clampFabPosition({ x: -40, y: 900 }, { width: 360, height: 640 }),
+    { x: 8, y: 570 }
+  );
+  assert.deepEqual(
+    pg.__test.clampFabPosition({ x: 140, y: 200 }, { width: 360, height: 640 }),
+    { x: 140, y: 200 }
+  );
 });
 
 test("extractDomain strips common prefixes and keeps editable host defaults stable", () => {
